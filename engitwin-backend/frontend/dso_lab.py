@@ -1,0 +1,1110 @@
+"""
+EngiTwin Virtual DSO + Function Generator Lab.
+
+This module owns the big HTML/JS string (`BENCH_HTML`) that renders the
+interactive oscilloscope + function generator bench, plus a small
+`render_bench()` helper that drops it into a Streamlit page via
+`streamlit.components.v1.html`.
+
+Usage (see frontend/pages/2_Simulation.py):
+
+    from dso_lab import render_bench
+    render_bench()
+
+or, if you need the raw HTML for some other purpose:
+
+    from dso_lab import BENCH_HTML
+    import streamlit.components.v1 as components
+    components.html(BENCH_HTML, height=1500, scrolling=True)
+"""
+
+import streamlit.components.v1 as components
+
+BENCH_HTML = r"""
+<div id="bench-root">
+  <style>
+    #bench-root * { box-sizing: border-box; font-family: 'Segoe UI', Arial, sans-serif; user-select: none; }
+    #bench-root { display:flex; flex-direction:column; gap:14px; position:relative; transition: margin-top 0.25s ease; }
+    #cableOverlay { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:3; overflow:visible; }
+
+    /* ============ shared control look ============ */
+    .btn {
+      background: linear-gradient(180deg,#f3ecd8,#cdbf98);
+      border: 1px solid #a89a72; border-radius: 6px; padding: 6px 4px;
+      font-size: 9px; font-weight: 700; color:#3a2f1f; text-align:center;
+      box-shadow: 0 2px 3px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.7);
+      cursor:pointer; flex:1; min-width: 0; line-height:1.15;
+    }
+    .btn:active { transform: translateY(1px); box-shadow: 0 1px 1px rgba(0,0,0,0.2); }
+    .btn.active { background: linear-gradient(180deg,#ffe066,#e0b30f); color:#3a2f1f; border-color:#b8880a; }
+    .btn.wide { flex: 1.6; }
+    .row { display:flex; align-items:center; gap:8px; }
+    .row + .row { margin-top: 7px; }
+    .grow { flex:1; }
+    .section { border-radius: 10px; padding: 8px 10px 10px 10px; }
+    .section-label { font-size: 9px; font-weight:800; letter-spacing:1px; margin-bottom:6px; }
+    .knob {
+      width: 44px; height: 44px; border-radius: 50%; position: relative; cursor: ns-resize;
+      background: radial-gradient(circle at 33% 30%, #fbf6e8, #e2d5ac 55%, #b7a878 100%);
+      box-shadow: 0 3px 5px rgba(0,0,0,0.35), inset 0 1px 2px rgba(255,255,255,0.8);
+      touch-action: none; flex: 0 0 auto; transition: box-shadow 0.15s ease;
+    }
+    .knob:hover { box-shadow: 0 3px 5px rgba(0,0,0,0.35), inset 0 1px 2px rgba(255,255,255,0.8), 0 0 0 4px rgba(122,31,61,0.15); }
+    .knob.dragging { box-shadow: 0 3px 8px rgba(0,0,0,0.5), inset 0 1px 2px rgba(255,255,255,0.9), 0 0 0 5px rgba(122,31,61,0.35); }
+    .knob .pointer { transition: transform 0.04s linear; }
+    .knob-bubble {
+      position:absolute; top:-26px; left:50%; transform:translateX(-50%);
+      background:#2f2a20; color:#fff8ec; font-size:9px; font-weight:800; padding:3px 7px;
+      border-radius:5px; white-space:nowrap; z-index:20; pointer-events:none;
+      box-shadow:0 2px 6px rgba(0,0,0,0.4); display:none;
+    }
+    .knob.small { width: 32px; height: 32px; }
+    .knob .ring { position:absolute; inset:-4px; border-radius:50%; border: 3px solid transparent; pointer-events:none; }
+    .knob .pointer {
+      position:absolute; top:4px; left:50%; width:3px; height:38%;
+      background:#2f2a20; transform-origin: bottom center; transform: translateX(-50%) rotate(0deg);
+      border-radius:2px;
+    }
+    .knob.green .ring { border-color:#3fae4a; }
+    .knob.olive .ring { border-color:#8a8f3a; }
+    .ctrl-cluster { display:flex; flex-direction:column; align-items:center; gap:3px; }
+    .ctrl-label { font-size: 8px; font-weight:700; color:#4b5563; text-align:center; line-height:1.1; }
+    .power-btn {
+      width: 36px; height: 36px; border-radius: 50%; cursor:pointer; position:relative;
+      background: linear-gradient(180deg,#f3ecd8,#cdbf98); border: 2px solid #a89a72;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.7);
+      display:flex; align-items:center; justify-content:center;
+    }
+    .power-btn::before { content:'⏻'; font-size:15px; color:#3a2f1f; }
+    .power-led { position:absolute; top:-3px; right:-3px; width:9px; height:9px; border-radius:50%; background:#6b6b6b; box-shadow: inset 0 0 2px rgba(0,0,0,0.6); }
+    .power-led.on { background:#3fd15a; box-shadow: 0 0 6px #3fd15a; }
+    .tag { font-size:9px; font-weight:800; padding:2px 6px; border-radius:4px; background:#f1e9d3; border:1px solid #b7a878; color:#5c4f33; }
+    .tutorial-highlight { position: relative; z-index: 5; }
+    .tutorial-highlight::after {
+      content:''; position:absolute; inset:-6px; border-radius: 12px; border: 3px solid #ff5f8a;
+      box-shadow: 0 0 12px 2px rgba(255,95,138,0.8); animation: pulseGlow 1.1s ease-in-out infinite; pointer-events:none;
+    }
+    @keyframes pulseGlow { 0%,100% { opacity:0.5; transform:scale(1); } 50% { opacity:1; transform:scale(1.05); } }
+
+    /* ============ DSO ============ */
+    #dso-panel {
+      background: linear-gradient(180deg, #e9dfc6 0%, #d6c8a4 100%);
+      border-radius: 18px; padding: 14px 18px 18px 18px; border: 1px solid #a89a72;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.5);
+    }
+    .top-bezel { display:flex; justify-content:space-between; align-items:center; padding: 2px 6px 8px 6px; }
+    .brand { font-weight: 800; font-size: 18px; color: #2f2a20; letter-spacing: 1px; }
+    .brand span { color:#7a1f3d; }
+    .spec { font-size: 10px; color:#3a2f1f; font-weight:700; background:#f1e9d3; padding:3px 9px; border-radius:5px; border:1px solid #b7a878; }
+    .top-right-controls { display:flex; align-items:center; gap:12px; margin-bottom:6px; justify-content:flex-end; }
+    .tutorial-toggle {
+      background: linear-gradient(180deg,#7a1f3d,#5a1730); color:#fff; border:1px solid #4a1226;
+      border-radius: 6px; padding: 6px 13px; font-size:11px; font-weight:800; cursor:pointer;
+    }
+    .main-row { display:grid; grid-template-columns: minmax(300px, 3fr) 1.55fr; gap: 12px; align-items:stretch; }
+    .screen-wrap {
+      position: relative; background: #05070a; border-radius: 8px; border: 9px solid #a4294f;
+      box-shadow: inset 0 0 30px rgba(0,0,0,0.9), 0 2px 6px rgba(0,0,0,0.4); overflow: hidden; min-height: 380px;
+    }
+    #scope-canvas { width: 100%; height: 100%; display:block; }
+    .run-badge { position:absolute; top:8px; left:8px; font-size:11px; font-weight:800; color:#fff; padding: 2px 8px; border-radius:3px; }
+    .measure-box {
+      position:absolute; top:8px; right:8px; background: rgba(10,20,35,0.88); border:1px solid #2c7fb8;
+      border-radius:4px; padding:6px 10px; font-size:10.5px; color:#9fe6ff; line-height:1.6; min-width:150px; display:none;
+    }
+    .measure-box.show { display:block; }
+    .measure-box .mlabel { color:#7fb9d6; }
+    .brand-corner { position:absolute; bottom:6px; left:10px; font-size:11px; color:#5fb8ff; opacity:0.7; font-weight:700;}
+    .settings-corner { position:absolute; bottom:6px; right:10px; font-size:9.5px; color:#d9dee3; opacity:0.8; text-align:right; line-height:1.4; }
+    .dso-control-panel { display:flex; flex-direction:column; gap:7px; }
+    .dso-control-panel .section { background: #e4d9bd; border: 1px solid #b7a878; }
+    .dso-control-panel .section-label { color:#5c4f33; }
+    .meas-panel {
+      display:none; background:#fff8ec; border:2px solid #2c7fb8; border-radius:8px; padding:8px 10px; margin-top:6px;
+    }
+    .meas-panel.show { display:block; }
+    .meas-panel .row { gap:5px; }
+
+    /* ============ Function Generator ============ */
+    #fg-panel {
+      background: linear-gradient(180deg, #dbe6ea 0%, #b9cdd4 100%);
+      border-radius: 18px; padding: 14px 18px 18px 18px; border: 1px solid #7c97a1;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.5);
+    }
+    #fg-panel.powered-off .fg-body { opacity:0.35; pointer-events:none; filter: grayscale(0.4); }
+    .fg-brand { font-weight: 800; font-size: 18px; color: #1c2e33; letter-spacing: 1px; }
+    .fg-brand span { color:#0e6b8c; }
+    .fg-spec { font-size: 10px; color:#1c2e33; font-weight:700; background:#eaf2f4; padding:3px 9px; border-radius:5px; border:1px solid #9fb7bf; }
+    .fg-body { display:grid; grid-template-columns: 1.3fr 1.4fr 1fr; gap: 14px; }
+    .fg-body .section { background:#cfe0e5; border:1px solid #9fb7bf; }
+    .fg-body .section-label { color:#1c4650; }
+    .fg-display {
+      background:#04262e; border-radius:8px; border:6px solid #2c4a52; padding:10px 12px;
+      box-shadow: inset 0 0 18px rgba(0,0,0,0.8); color:#7fe3c8; font-family: monospace; font-size:12px; line-height:1.8;
+    }
+    .fg-display .fg-wave-name { color:#ffe066; font-weight:800; font-size:14px; }
+    .fg-field { display:flex; align-items:center; justify-content:space-between; gap:6px; margin-top:4px; }
+    .fg-field label { font-size:9.5px; font-weight:700; color:#1c4650; flex:0 0 52px; }
+    .fg-field input[type=number] {
+      width: 76px; padding:3px 5px; font-size:11px; border-radius:4px; border:1px solid #7c97a1; text-align:right;
+    }
+    .fg-field select {
+      font-size:10px; padding:2px 3px; border-radius:4px; border:1px solid #7c97a1;
+    }
+    .fg-wave-grid { display:grid; grid-template-columns: 1fr 1fr; gap:5px; }
+    .fg-output-btn {
+      background: linear-gradient(180deg,#eaf2f4,#b9cdd4); border:1px solid #7c97a1; border-radius:6px;
+      padding:8px; font-size:11px; font-weight:800; color:#1c4650; cursor:pointer; text-align:center;
+    }
+    .fg-output-btn.on { background: linear-gradient(180deg,#5ad17a,#1f9d55); color:#fff; border-color:#1a7a42; }
+    .fg-load-btn { background: linear-gradient(180deg,#eaf2f4,#b9cdd4); border:1px solid #7c97a1; border-radius:6px; padding:7px; font-size:10.5px; font-weight:800; color:#1c4650; cursor:pointer; text-align:center; }
+    .fg-bnc-row { display:flex; align-items:center; gap:10px; margin-top:10px; }
+    .bnc-conn { width: 36px; height: 36px; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #444, #111 70%); border: 4px solid #2a2e33; position:relative; cursor:pointer; }
+    .bnc-conn::after { content:''; position:absolute; inset:10px; border-radius:50%; background:#0a0c0e; }
+    .bnc-conn.ch1 { box-shadow: 0 0 0 3px #e0b30f; }
+    .bnc-conn.ch2 { box-shadow: 0 0 0 3px #3f7fbf; }
+    .bnc-conn.fgout { box-shadow: 0 0 0 3px #0e6b8c; }
+    .bnc-conn.lit { box-shadow: 0 0 0 3px #ff5f8a, 0 0 8px 2px #ff5f8a; }
+    .bnc-status { font-size:9.5px; font-weight:700; color:#1c4650; }
+    .link-note { font-size:9.5px; font-weight:700; color:#7a1f3d; margin-top:4px; }
+
+    /* ============ Tutorial floating banner ============ */
+    .tutorial-card {
+      position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+      width: min(92%, 900px); z-index: 50;
+      background: #fff8ec; border: 2px solid #7a1f3d; border-radius: 12px; padding: 10px 16px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+      display:none;
+    }
+    .tutorial-card.show { display:flex; align-items:center; gap:14px; }
+    .tutorial-card.scroll-hint { background:#7a1f3d; border-color:#5a1730; cursor:pointer; }
+    .tutorial-card.scroll-hint .t-title, .tutorial-card.scroll-hint .t-desc { color:#fff8ec; }
+    .tutorial-card.scroll-hint .tutorial-step-badge { background:#ffe066; color:#5a1730; }
+    .tutorial-step-badge { flex:0 0 auto; background:#7a1f3d; color:#fff; font-weight:800; font-size:12px; border-radius:50%; width:30px; height:30px; display:flex; align-items:center; justify-content:center; }
+    .tutorial-text { flex:1; }
+    .tutorial-text .t-title { font-size:13px; font-weight:800; color:#3a2f1f; margin-bottom:2px; }
+    .tutorial-text .t-desc { font-size:12px; color:#5c4f33; line-height:1.4; }
+    .scroll-arrow { display:inline-block; animation: bounceArrow 1s ease-in-out infinite; }
+    @keyframes bounceArrow { 0%,100% { transform:translateY(0); } 50% { transform:translateY(5px); } }
+    .tutorial-nav { display:flex; gap:6px; flex:0 0 auto; }
+    .tutorial-nav button { background: linear-gradient(180deg,#f3ecd8,#cdbf98); border:1px solid #a89a72; border-radius:6px; padding: 6px 12px; font-size:11px; font-weight:700; color:#3a2f1f; cursor:pointer; }
+    .tutorial-nav button.primary { background: linear-gradient(180deg,#ffe066,#e0b30f); border-color:#b8880a; }
+    #bench-root.tutorial-active { margin-top: 76px; }
+  </style>
+
+  <svg id="cableOverlay"></svg>
+
+  <!-- =================== DSO PANEL =================== -->
+  <div id="dso-panel">
+    <div class="top-bezel">
+      <div class="brand">AKADEMIKA<span>&nbsp;DSO</span></div>
+      <div class="spec">DSO-100C1G &middot; 100MHz &middot; 1GS/s DIGITAL STORAGE OSCILLOSCOPE</div>
+    </div>
+    <div class="top-right-controls">
+      <div class="tutorial-toggle" id="b_tutorial_toggle">▶ Guided Tutorial</div>
+      <div style="position:relative;"><div class="power-btn" id="b_power"></div><div class="power-led on" id="powerLed"></div></div>
+      <div class="ctrl-cluster"><div class="knob small" id="k_multi"><div class="ring"></div><div class="pointer"></div><div class="knob-bubble"></div></div><div class="ctrl-label">MENU<br/>SELECT</div></div>
+    </div>
+
+    <div class="main-row">
+      <div class="screen-wrap">
+        <canvas id="scope-canvas"></canvas>
+        <div class="run-badge" id="runBadge" style="background:#1f9d55;">RUN</div>
+        <div class="measure-box" id="measureBox"></div>
+        <div class="brand-corner">EngiTwin Virtual Lab</div>
+        <div class="settings-corner" id="settingsCorner"></div>
+      </div>
+
+      <div class="dso-control-panel">
+        <div class="section">
+          <div class="row">
+            <div class="btn" id="b_measure">MEASURE</div>
+            <div class="btn active wide" id="b_auto">AUTO SCALE</div>
+          </div>
+          <div class="row">
+            <div class="btn" id="b_runstop" style="background:linear-gradient(180deg,#ff7a6b,#c0392b); color:#fff; border-color:#c0392b;">RUN/STOP</div>
+            <div class="btn" id="b_single">SINGLE</div>
+          </div>
+          <div class="meas-panel" id="measPanel">
+            <div class="row"><span class="tag">Source</span>
+              <div class="btn" id="b_srcch1" style="flex:0 0 40px;">CH1</div>
+              <div class="btn" id="b_srcch2" style="flex:0 0 40px;">CH2</div>
+            </div>
+            <div class="row">
+              <div class="btn" id="b_addfreq">+ Freq</div>
+              <div class="btn" id="b_addpkpk">+ Pk-Pk</div>
+            </div>
+            <div class="row"><div class="btn wide" id="b_clearmeas">Clear Meas</div></div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-label">VERTICAL — active: <span id="activeChLabel">CH1</span></div>
+          <div class="row">
+            <div class="ctrl-cluster"><div class="knob small green" id="k_pos1"><div class="ring"></div><div class="pointer"></div><div class="knob-bubble"></div></div><div class="ctrl-label">POSITION</div></div>
+            <div class="ctrl-cluster"><div class="knob" id="k_v1"><div class="ring"></div><div class="pointer"></div><div class="knob-bubble"></div></div><div class="ctrl-label">VOLTS/DIV</div></div>
+            <div style="flex:1; display:flex; flex-direction:column; gap:5px;">
+              <div class="btn" id="b_coupling" style="font-size:8.5px;">DC</div>
+              <div class="btn" id="b_probeatt" style="font-size:8.5px;">1X</div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="btn active" id="b_ch1" style="border-color:#e0b30f;">CH1</div>
+            <div class="btn active" id="b_ch2" style="border-color:#3f7fbf;">CH2</div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-label">HORIZONTAL</div>
+          <div class="row">
+            <div class="ctrl-cluster"><div class="knob small green" id="k_hpos"><div class="ring"></div><div class="pointer"></div><div class="knob-bubble"></div></div><div class="ctrl-label">POSITION</div></div>
+            <div class="ctrl-cluster"><div class="knob" id="k_time"><div class="ring"></div><div class="pointer"></div><div class="knob-bubble"></div></div><div class="ctrl-label">SEC/DIV</div></div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-label">TRIGGER (auto, edge)</div>
+          <div class="row">
+            <div class="ctrl-cluster"><div class="knob small olive" id="k_trig"><div class="ring"></div><div class="pointer"></div><div class="knob-bubble"></div></div><div class="ctrl-label">LEVEL</div></div>
+            <div class="btn" id="b_force">FORCE</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="fg-bnc-row" style="margin-top:12px; border-top:1px solid #b7a878; padding-top:10px;">
+      <div class="bnc-conn ch1" id="bnc_ch1"></div>
+      <div class="bnc-status" id="ch1Status">CH1: bare probe (ambient noise)</div>
+      <div class="grow"></div>
+      <div class="bnc-conn ch2" id="bnc_ch2"></div>
+      <div class="bnc-status" id="ch2Status">CH2: bare probe (ambient noise)</div>
+    </div>
+  </div>
+
+  <!-- =================== FUNCTION GENERATOR PANEL =================== -->
+  <div id="fg-panel">
+    <div class="top-bezel">
+      <div class="fg-brand">KEYSIGHT-STYLE<span>&nbsp;33500B</span></div>
+      <div class="fg-spec">FUNCTION / ARBITRARY WAVEFORM GENERATOR</div>
+    </div>
+    <div class="top-right-controls">
+      <div style="position:relative;"><div class="power-btn" id="fg_power"></div><div class="power-led" id="fg_powerLed"></div></div>
+    </div>
+
+    <div class="fg-body">
+      <div class="section">
+        <div class="section-label">WAVEFORM</div>
+        <div class="fg-wave-grid">
+          <div class="btn active" id="fg_w_sine">Sine</div>
+          <div class="btn" id="fg_w_square">Square</div>
+          <div class="btn" id="fg_w_tri">Triangle</div>
+          <div class="btn" id="fg_w_saw">Ramp</div>
+          <div class="btn" id="fg_w_pulse">Pulse</div>
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <div class="fg-output-btn" id="fg_output" style="flex:1;">Output: OFF</div>
+        </div>
+        <div class="row">
+          <div class="fg-load-btn" id="fg_load" style="flex:1;">Output Load: 50Ω</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-label">PARAMETERS</div>
+        <div class="fg-field"><label>Freq</label><input type="number" id="fg_freq_val" value="1" step="0.001" min="0.001"/><select id="fg_freq_unit"><option value="1">Hz</option><option value="1000" selected>kHz</option><option value="1000000">MHz</option></select></div>
+        <div class="fg-field"><label>Ampl</label><input type="number" id="fg_amp_val" value="100" step="1" min="0"/><select id="fg_amp_unit"><option value="0.001" selected>mVpp</option><option value="1">Vpp</option></select></div>
+        <div class="fg-field"><label>Offset</label><input type="number" id="fg_offset" value="0" step="0.01"/><span class="tag">V</span></div>
+        <div class="fg-field"><label>Phase</label><input type="number" id="fg_phase" value="0" step="1"/><span class="tag">deg</span></div>
+      </div>
+
+      <div class="section">
+        <div class="section-label">DISPLAY</div>
+        <div class="fg-display">
+          <div class="fg-wave-name" id="fgDispWave">SINE</div>
+          <div>Freq: <span id="fgDispFreq">1.000 kHz</span></div>
+          <div>Ampl: <span id="fgDispAmp">100.0 mVpp</span></div>
+          <div>Offs: <span id="fgDispOffs">0.000 V</span></div>
+          <div>Out: <span id="fgDispOut">OFF</span> (<span id="fgDispLoad">50Ω</span>)</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="fg-bnc-row">
+      <div class="bnc-conn fgout" id="fg_bnc"></div>
+      <div class="bnc-status" id="fgBncStatus">Output jack — click CH1/CH2 jacks above to route this signal</div>
+    </div>
+    <div class="link-note" id="linkNote">Not connected to the oscilloscope.</div>
+  </div>
+
+  <!-- =================== TUTORIAL CARD =================== -->
+  <div class="tutorial-card" id="tutorialCard">
+    <div class="tutorial-step-badge" id="tStepBadge">1</div>
+    <div class="tutorial-text"><div class="t-title" id="tTitle"></div><div class="t-desc" id="tDesc"></div></div>
+    <div class="tutorial-nav"><button id="tPrev">◀ Back</button><button id="tNext" class="primary">Next ▶</button><button id="tExit">Exit</button></div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const dso = document.getElementById('dso-panel');
+  const fgPanel = document.getElementById('fg-panel');
+  const canvas = document.getElementById('scope-canvas');
+  const ctx = canvas.getContext('2d');
+
+  // ---- Calibrated instrument steps (matches real Keysight 1-2-5 sequences) ----
+  const VOLTS_OPTS = [0.002,0.005,0.01,0.02,0.05,0.1,0.2,0.5,1,2,5,10]; // V/div
+  const TIME_OPTS  = [1e-6,2e-6,5e-6,1e-5,2e-5,5e-5,1e-4,2e-4,5e-4,1e-3,2e-3,5e-3,1e-2,2e-2,5e-2,1e-1,2e-1,5e-1,1]; // s/div
+
+  const state = {
+    poweredOn: true, running: true,
+    ch1On: true, ch2On: false, activeCh: 1,
+    v1idx: 4, v2idx: 4,           // 50 mV/div default
+    pos1: 0, pos2: 0,
+    tdivIdx: 7,                   // 200 us/div default
+    hpos: 0, trigLevel: 0,
+    ch1Input: 'probe', ch2Input: 'probe',   // 'off' | 'probe' (noise) | 'funcgen'
+    ch1Coupling: 'DC', ch2Coupling: 'DC',
+    ch1Probe: '1X', ch2Probe: '1X',
+    measShow: false, measSource: 1, measFreq: false, measPkPk: false,
+    ch1Stats: null, ch2Stats: null,
+  };
+  const fg = { poweredOn: false, outputOn: false, waveform: 'sine', load: '50' };
+
+  function volts(idx){ return VOLTS_OPTS[idx]; }
+  function tdiv(){ return TIME_OPTS[state.tdivIdx]; }
+
+  // ---------------- Formatting ----------------
+  function fmtFreq(hz){
+    if (!isFinite(hz)) return '---';
+    if (hz >= 1e6) return (hz/1e6).toFixed(4) + ' MHz';
+    if (hz >= 1e3) return (hz/1e3).toFixed(4) + ' kHz';
+    return hz.toFixed(2) + ' Hz';
+  }
+  function fmtVolts(v){
+    const av = Math.abs(v);
+    if (av < 1) return (v*1000).toFixed(1) + ' mV';
+    return v.toFixed(3) + ' V';
+  }
+  function fmtTime(t){
+    if (t < 1e-3) return (t*1e6).toFixed(1) + ' \u00b5s';
+    if (t < 1) return (t*1e3).toFixed(2) + ' ms';
+    return t.toFixed(3) + ' s';
+  }
+
+  // ---------------- Function generator readouts ----------------
+  function fgFreqHz(){
+    const val = parseFloat(document.getElementById('fg_freq_val').value) || 0;
+    const mult = parseFloat(document.getElementById('fg_freq_unit').value) || 1;
+    return val * mult;
+  }
+  function fgSetAmpVpp(){
+    const val = parseFloat(document.getElementById('fg_amp_val').value) || 0;
+    const mult = parseFloat(document.getElementById('fg_amp_unit').value) || 1;
+    return val * mult;
+  }
+  function fgOffset(){ return parseFloat(document.getElementById('fg_offset').value) || 0; }
+  function fgPhaseRad(){ return ((parseFloat(document.getElementById('fg_phase').value) || 0) * Math.PI) / 180; }
+
+  // Real behavior: the generator's amplitude dial is calibrated assuming the
+  // set "Output Load". A 1 M-ohm scope input is effectively High-Z. If the
+  // generator thinks it is driving 50 ohm but actually sees an open (high-Z)
+  // load, the real terminal voltage doubles versus the dial reading.
+  function fgActualAmpVpp(){
+    const setV = fgSetAmpVpp();
+    return fg.load === 'highz' ? setV : setV * 2;
+  }
+
+  function fgSample(t){
+    if (!fg.poweredOn || !fg.outputOn) return 0;
+    const f = fgFreqHz();
+    const amp = fgActualAmpVpp() / 2;
+    const off = fgOffset();
+    const ph = fgPhaseRad();
+    const w = 2*Math.PI*f*t + ph;
+    let v;
+    switch (fg.waveform) {
+      case 'square': v = amp * Math.sign(Math.sin(w) || 1); break;
+      case 'tri':    v = amp * (2/Math.PI) * Math.asin(Math.sin(w)); break;
+      case 'saw': {
+        const frac = (((w/(2*Math.PI)) % 1) + 1) % 1;
+        v = amp * (2*frac - 1);
+        break;
+      }
+      case 'pulse': {
+        const frac = (((w/(2*Math.PI)) % 1) + 1) % 1;
+        v = frac < 0.2 ? amp : -amp;
+        break;
+      }
+      default: v = amp * Math.sin(w);
+    }
+    return v + off;
+  }
+
+  // Ambient / thermal noise picked up by an unterminated bare BNC probe
+  function noiseSample(t, seed){
+    return 0.0020*Math.sin(2*Math.PI*60*t + seed) +
+           0.0011*Math.sin(2*Math.PI*137*t + seed*1.7) +
+           0.0006*Math.sin(2*Math.PI*971*t + seed*2.3);
+  }
+
+  function channelSample(ch, t){
+    const input = ch === 1 ? state.ch1Input : state.ch2Input;
+    if (input === 'funcgen') return fgSample(t);
+    if (input === 'probe') return noiseSample(t, ch === 1 ? 0.3 : 1.9);
+    return 0;
+  }
+  function channelHasPeriodicSignal(ch){
+    const input = ch === 1 ? state.ch1Input : state.ch2Input;
+    return input === 'funcgen' && fg.poweredOn && fg.outputOn && fgFreqHz() > 0;
+  }
+  function channelCoupling(ch){ return ch === 1 ? state.ch1Coupling : state.ch2Coupling; }
+  function channelProbeMult(ch){ return (ch === 1 ? state.ch1Probe : state.ch2Probe) === '10X' ? 10 : 1; }
+  function channelOn(ch){ return ch === 1 ? state.ch1On : state.ch2On; }
+  function channelVolts(ch){ return volts(ch === 1 ? state.v1idx : state.v2idx); }
+  function channelPos(ch){ return ch === 1 ? state.pos1 : state.pos2; }
+
+  // ---------------- Knob handling (stepped for scale, continuous for position) ----------------
+  // Sensitivity constants: lower STEP_PX = more turn per pixel of drag (more sensitive).
+  const STEP_PX = 7;        // px of vertical drag per step, for stepped knobs (was 16 — much less sensitive)
+  const CONTINUOUS_PX = 45; // px of vertical drag to sweep the full range, for continuous knobs (was 100)
+
+  function attachSteppedKnob(id, getIdx, setIdx, len, formatFn){
+    const el = document.getElementById(id);
+    const bubble = el.querySelector('.knob-bubble');
+    let dragging=false, startY=0, startIdx=0;
+    function updatePointer(){
+      const idx = getIdx();
+      const deg = (idx/(len-1))*270 - 135;
+      el.querySelector('.pointer').style.transform = 'translateX(-50%) rotate('+deg+'deg)';
+      if (bubble && formatFn) bubble.textContent = formatFn(idx);
+    }
+    function showBubble(){ if (bubble) bubble.style.display = 'block'; }
+    function hideBubble(){ if (bubble) bubble.style.display = 'none'; }
+    updatePointer();
+    el.addEventListener('pointerdown', e=>{
+      dragging=true; startY=e.clientY; startIdx=getIdx();
+      el.classList.add('dragging'); showBubble(); updatePointer();
+      el.setPointerCapture(e.pointerId);
+    });
+    el.addEventListener('pointermove', e=>{
+      if(!dragging) return;
+      const dy = startY - e.clientY;
+      const steps = Math.round(dy/STEP_PX);
+      const newIdx = Math.max(0, Math.min(len-1, startIdx+steps));
+      if (newIdx !== getIdx()) { setIdx(newIdx); }
+      updatePointer();
+    });
+    function endDrag(){ if(!dragging) return; dragging=false; el.classList.remove('dragging'); hideBubble(); }
+    el.addEventListener('pointerup', endDrag);
+    el.addEventListener('pointercancel', endDrag);
+    el.addEventListener('wheel', e=>{
+      e.preventDefault();
+      const dir = e.deltaY < 0 ? 1 : -1;
+      const newIdx = Math.max(0, Math.min(len-1, getIdx()+dir));
+      if (newIdx !== getIdx()) { setIdx(newIdx); updatePointer(); showBubble();
+        clearTimeout(el._wheelTO); el._wheelTO = setTimeout(hideBubble, 700); }
+    }, {passive:false});
+    el._refresh = updatePointer;
+    return el;
+  }
+  function attachContinuousKnob(id, min, max, getVal, setVal, formatFn){
+    const el = document.getElementById(id);
+    const bubble = el.querySelector('.knob-bubble');
+    let dragging=false, startY=0, startVal=0;
+    function updatePointer(){
+      const v = getVal();
+      const deg = ((v-min)/(max-min))*270 - 135;
+      el.querySelector('.pointer').style.transform = 'translateX(-50%) rotate('+deg+'deg)';
+      if (bubble && formatFn) bubble.textContent = formatFn(v);
+    }
+    function showBubble(){ if (bubble) bubble.style.display = 'block'; }
+    function hideBubble(){ if (bubble) bubble.style.display = 'none'; }
+    updatePointer();
+    el.addEventListener('pointerdown', e=>{
+      dragging=true; startY=e.clientY; startVal=getVal();
+      el.classList.add('dragging'); showBubble(); updatePointer();
+      el.setPointerCapture(e.pointerId);
+    });
+    el.addEventListener('pointermove', e=>{
+      if(!dragging) return;
+      const dy = startY - e.clientY;
+      let v = startVal + (dy/CONTINUOUS_PX)*(max-min);
+      v = Math.max(min, Math.min(max, v));
+      setVal(v); updatePointer();
+    });
+    function endDrag(){ if(!dragging) return; dragging=false; el.classList.remove('dragging'); hideBubble(); }
+    el.addEventListener('pointerup', endDrag);
+    el.addEventListener('pointercancel', endDrag);
+    el.addEventListener('wheel', e=>{
+      e.preventDefault();
+      const step = (max-min)/40;
+      const dir = e.deltaY < 0 ? 1 : -1;
+      let v = getVal() + dir*step;
+      v = Math.max(min, Math.min(max, v));
+      setVal(v); updatePointer(); showBubble();
+      clearTimeout(el._wheelTO); el._wheelTO = setTimeout(hideBubble, 700);
+    }, {passive:false});
+    el._refresh = updatePointer;
+    return el;
+  }
+
+  const kV1 = attachSteppedKnob('k_v1',
+    ()=> state.activeCh===1?state.v1idx:state.v2idx,
+    (i)=>{ if(state.activeCh===1) state.v1idx=i; else state.v2idx=i; },
+    VOLTS_OPTS.length,
+    (idx)=> fmtVolts(VOLTS_OPTS[idx]) + '/div');
+  const kTime = attachSteppedKnob('k_time', ()=>state.tdivIdx, (i)=>state.tdivIdx=i, TIME_OPTS.length,
+    (idx)=> fmtTime(TIME_OPTS[idx]) + '/div');
+  const kPos1 = attachContinuousKnob('k_pos1', -4, 4,
+    ()=> state.activeCh===1?state.pos1:state.pos2,
+    (v)=>{ if(state.activeCh===1) state.pos1=v; else state.pos2=v; },
+    (v)=> (v>=0?'+':'') + v.toFixed(2) + ' div');
+  const kHpos = attachContinuousKnob('k_hpos', -5, 5, ()=>state.hpos, (v)=>state.hpos=v,
+    (v)=> (v>=0?'+':'') + v.toFixed(2) + ' div');
+  const kTrig = attachContinuousKnob('k_trig', -5, 5, ()=>state.trigLevel, (v)=>state.trigLevel=v,
+    (v)=> v.toFixed(2) + ' V');
+  attachContinuousKnob('k_multi', 0, 1, ()=>0.5, ()=>{});
+
+  function refreshKnobs(){ [kV1,kTime,kPos1,kHpos,kTrig].forEach(k=>k._refresh && k._refresh()); }
+
+  // ---------------- Channel select / on-off ----------------
+  function updateChannelButtons(){
+    document.getElementById('b_ch1').classList.toggle('active', state.ch1On);
+    document.getElementById('b_ch2').classList.toggle('active', state.ch2On);
+    document.getElementById('b_ch1').style.outline = state.activeCh===1 ? '2px solid #7a1f3d' : 'none';
+    document.getElementById('b_ch2').style.outline = state.activeCh===2 ? '2px solid #7a1f3d' : 'none';
+    document.getElementById('activeChLabel').textContent = 'CH'+state.activeCh;
+    document.getElementById('b_coupling').textContent = state.activeCh===1?state.ch1Coupling:state.ch2Coupling;
+    document.getElementById('b_probeatt').textContent = state.activeCh===1?state.ch1Probe:state.ch2Probe;
+    refreshKnobs();
+  }
+  document.getElementById('b_ch1').addEventListener('click', ()=>{
+    if (state.activeCh !== 1) { state.activeCh = 1; } else { state.ch1On = !state.ch1On; }
+    updateChannelButtons();
+  });
+  document.getElementById('b_ch2').addEventListener('click', ()=>{
+    if (state.activeCh !== 2) { state.activeCh = 2; } else { state.ch2On = !state.ch2On; }
+    updateChannelButtons();
+  });
+  document.getElementById('b_coupling').addEventListener('click', ()=>{
+    if (state.activeCh===1) state.ch1Coupling = state.ch1Coupling==='DC'?'AC':'DC';
+    else state.ch2Coupling = state.ch2Coupling==='DC'?'AC':'DC';
+    updateChannelButtons();
+  });
+  document.getElementById('b_probeatt').addEventListener('click', ()=>{
+    if (state.activeCh===1) state.ch1Probe = state.ch1Probe==='1X'?'10X':'1X';
+    else state.ch2Probe = state.ch2Probe==='1X'?'10X':'1X';
+    updateChannelButtons();
+  });
+  updateChannelButtons();
+
+  // ---------------- Run / Stop / Single ----------------
+  document.getElementById('b_runstop').addEventListener('click', ()=>{
+    state.running = !state.running;
+    const badge = document.getElementById('runBadge');
+    badge.textContent = state.running ? 'RUN' : 'STOP';
+    badge.style.background = state.running ? '#1f9d55' : '#c0392b';
+  });
+  document.getElementById('b_single').addEventListener('click', ()=>{
+    state.running = false;
+    frozenNow = performance.now()/1000;
+    const badge = document.getElementById('runBadge');
+    badge.textContent = 'STOP'; badge.style.background = '#c0392b';
+  });
+
+  // ---------------- Auto Scale (does real work) ----------------
+  document.getElementById('b_auto').addEventListener('click', ()=>{
+    let refFreq = null;
+    [1,2].forEach(ch=>{
+      if (!channelOn(ch)) return;
+      let ampVpp = 0, freqHz = 0, periodic = false;
+      if ((ch===1?state.ch1Input:state.ch2Input) === 'funcgen') {
+        ampVpp = channelProbeMult(ch) * fgActualAmpVpp();
+        if (channelHasPeriodicSignal(ch)) { freqHz = fgFreqHz(); periodic = true; }
+      } else if ((ch===1?state.ch1Input:state.ch2Input) === 'probe') {
+        ampVpp = channelProbeMult(ch) * 0.006;
+      }
+      let vIdx = VOLTS_OPTS.findIndex(v => (ampVpp/2)/v <= 3);
+      if (vIdx === -1) vIdx = VOLTS_OPTS.length - 1;
+      if (ampVpp === 0) vIdx = 4;
+      if (ch===1) { state.v1idx = vIdx; state.pos1 = 0; } else { state.v2idx = vIdx; state.pos2 = 0; }
+      if (periodic && !refFreq) refFreq = freqHz;
+    });
+    if (refFreq) {
+      const targetTotal = (1/refFreq) * 3;
+      let tIdx = TIME_OPTS.findIndex(t => t*10 >= targetTotal);
+      if (tIdx === -1) tIdx = TIME_OPTS.length - 1;
+      state.tdivIdx = tIdx;
+    }
+    state.hpos = 0;
+    refreshKnobs();
+  });
+
+  // ---------------- Measurement panel ----------------
+  document.getElementById('b_measure').addEventListener('click', ()=>{
+    state.measShow = !state.measShow;
+    document.getElementById('measPanel').classList.toggle('show', state.measShow);
+    document.getElementById('measureBox').classList.toggle('show', state.measFreq || state.measPkPk);
+  });
+  document.getElementById('b_srcch1').addEventListener('click', ()=>{ state.measSource=1; refreshMeasButtons(); });
+  document.getElementById('b_srcch2').addEventListener('click', ()=>{ state.measSource=2; refreshMeasButtons(); });
+  document.getElementById('b_addfreq').addEventListener('click', ()=>{
+    state.measFreq = !state.measFreq;
+    document.getElementById('measureBox').classList.toggle('show', state.measFreq || state.measPkPk);
+    refreshMeasButtons();
+  });
+  document.getElementById('b_addpkpk').addEventListener('click', ()=>{
+    state.measPkPk = !state.measPkPk;
+    document.getElementById('measureBox').classList.toggle('show', state.measFreq || state.measPkPk);
+    refreshMeasButtons();
+  });
+  document.getElementById('b_clearmeas').addEventListener('click', ()=>{
+    state.measFreq = false; state.measPkPk = false;
+    document.getElementById('measureBox').classList.remove('show');
+    refreshMeasButtons();
+  });
+  function refreshMeasButtons(){
+    document.getElementById('b_srcch1').classList.toggle('active', state.measSource===1);
+    document.getElementById('b_srcch2').classList.toggle('active', state.measSource===2);
+    document.getElementById('b_addfreq').classList.toggle('active', state.measFreq);
+    document.getElementById('b_addpkpk').classList.toggle('active', state.measPkPk);
+  }
+  refreshMeasButtons();
+
+  // ---------------- Power ----------------
+  document.getElementById('b_power').addEventListener('click', ()=>{
+    state.poweredOn = !state.poweredOn;
+    dso.classList.toggle('powered-off-flag', !state.poweredOn);
+    document.getElementById('powerLed').classList.toggle('on', state.poweredOn);
+    // Disable/fade BOTH the main control row and the DSO's own BNC jack row
+    // when the scope is off (previously this only faded main-row and the
+    // forEach over '.main-row, .fg-bnc-row' was a no-op, so the CH1/CH2
+    // jacks stayed clickable even with the scope "off").
+    dso.querySelectorAll('.main-row, .fg-bnc-row').forEach(el=>{
+      el.style.opacity = state.poweredOn ? '1' : '0.35';
+      el.style.pointerEvents = state.poweredOn ? 'auto' : 'none';
+    });
+  });
+
+  // ---------------- BNC connections ----------------
+  // There is only one generator OUTPUT cable, so it can be clipped onto CH1
+  // OR CH2, but never both at the same time. Connecting it to one channel
+  // automatically unplugs it from the other.
+  function cycleCh1(){
+    state.ch1Input = state.ch1Input === 'off' ? 'probe' : state.ch1Input === 'probe' ? 'funcgen' : 'off';
+    if (state.ch1Input === 'funcgen' && state.ch2Input === 'funcgen') state.ch2Input = 'probe';
+    refreshConnections();
+  }
+  function cycleCh2(){
+    state.ch2Input = state.ch2Input === 'off' ? 'probe' : state.ch2Input === 'probe' ? 'funcgen' : 'off';
+    if (state.ch2Input === 'funcgen' && state.ch1Input === 'funcgen') state.ch1Input = 'probe';
+    refreshConnections();
+  }
+  document.getElementById('bnc_ch1').addEventListener('click', cycleCh1);
+  document.getElementById('bnc_ch2').addEventListener('click', cycleCh2);
+  document.getElementById('fg_bnc').addEventListener('click', ()=>{
+    // If already connected somewhere, unplug it. Otherwise plug into
+    // whichever channel isn't already occupied by the generator — default
+    // to CH1 if neither is connected.
+    if (state.ch1Input === 'funcgen') { state.ch1Input = 'probe'; }
+    else if (state.ch2Input === 'funcgen') { state.ch2Input = 'probe'; }
+    else { state.ch1Input = 'funcgen'; }
+    refreshConnections();
+  });
+  // ---------------- Alligator-clip cable art (spans across both panels) ----------------
+  const bench = document.getElementById('bench-root');
+  const overlay = document.getElementById('cableOverlay');
+  function updateCablePath(){
+    if (!overlay) return;
+    const connectedCh = state.ch1Input === 'funcgen' ? 1 : state.ch2Input === 'funcgen' ? 2 : null;
+    if (!connectedCh) { overlay.innerHTML = ''; return; }
+    const benchRect = bench.getBoundingClientRect();
+    const jackId = connectedCh === 1 ? 'bnc_ch1' : 'bnc_ch2';
+    const c1Rect = document.getElementById(jackId).getBoundingClientRect();
+    const fgRect = document.getElementById('fg_bnc').getBoundingClientRect();
+    const x1 = c1Rect.left + c1Rect.width/2 - benchRect.left;
+    const y1 = c1Rect.top + c1Rect.height/2 - benchRect.top;
+    const x2 = fgRect.left + fgRect.width/2 - benchRect.left;
+    const y2 = fgRect.top + fgRect.height/2 - benchRect.top;
+    overlay.setAttribute('viewBox', '0 0 '+benchRect.width+' '+benchRect.height);
+    overlay.setAttribute('width', benchRect.width);
+    overlay.setAttribute('height', benchRect.height);
+
+    // CH1's jack sits near the left edge, right above the generator's own
+    // (also left-aligned) output jack, so a gentle vertical curve through the
+    // narrow gap between the two panels looks natural. CH2's jack sits at the
+    // far right, so a straight/mid-curve would cut diagonally across the
+    // generator's control panel. Instead, bow the cable out toward the right
+    // margin and down, so it skirts around the panel content.
+    let cx1, cy1, cx2, cy2, labelX, labelY;
+    if (connectedCh === 1) {
+      const midY = (y1+y2)/2;
+      cx1 = x1; cy1 = midY; cx2 = x2; cy2 = midY;
+      labelX = (x1+x2)/2; labelY = midY - 14;
+    } else {
+      const xRight = Math.min(Math.max(x1, x2) + 40, benchRect.width - 12);
+      cx1 = xRight; cy1 = y1; cx2 = xRight; cy2 = y2;
+      labelX = xRight; labelY = (y1+y2)/2;
+    }
+
+    const redPath = 'M '+(x1-4)+' '+y1+' C '+(cx1-4)+' '+cy1+' '+(cx2-4)+' '+cy2+' '+(x2-4)+' '+y2;
+    const blkPath = 'M '+(x1+4)+' '+y1+' C '+(cx1+4)+' '+cy1+' '+(cx2+4)+' '+cy2+' '+(x2+4)+' '+y2;
+    overlay.innerHTML =
+      '<path d="'+redPath+'" stroke="#c0392b" stroke-width="3" fill="none"/>' +
+      '<path d="'+blkPath+'" stroke="#2a2e33" stroke-width="3" fill="none"/>' +
+      '<g transform="translate('+(x1-4)+','+ (y1+ (connectedCh===1? (cy1-y1)/2 : 14)) +')"><polygon points="-7,-6 7,-6 0,8" fill="#c0392b" stroke="#7a1f1f"/></g>' +
+      '<g transform="translate('+(x1+4)+','+ (y1+ (connectedCh===1? (cy1-y1)/2 : 14)) +')"><polygon points="-7,-6 7,-6 0,8" fill="#2a2e33" stroke="#000"/></g>' +
+      '<g transform="translate('+(x2-4)+','+ (y2- (connectedCh===1? (y2-cy2)/2 : 14)) +')"><polygon points="-7,6 7,6 0,-8" fill="#c0392b" stroke="#7a1f1f"/></g>' +
+      '<g transform="translate('+(x2+4)+','+ (y2- (connectedCh===1? (y2-cy2)/2 : 14)) +')"><polygon points="-7,6 7,6 0,-8" fill="#2a2e33" stroke="#000"/></g>' +
+      '<text x="'+labelX+'" y="'+labelY+'" fill="#ffe066" font-size="10" font-weight="700" text-anchor="middle" font-family="Segoe UI, Arial">red-to-red / black-to-black alligator clips</text>';
+  }
+  window.addEventListener('resize', updateCablePath);
+  window.addEventListener('scroll', updateCablePath);
+
+  function refreshConnections(){
+    const c1 = document.getElementById('bnc_ch1');
+    const c2 = document.getElementById('bnc_ch2');
+    const fgc = document.getElementById('fg_bnc');
+    c1.classList.toggle('lit', state.ch1Input === 'funcgen');
+    c2.classList.toggle('lit', state.ch2Input === 'funcgen');
+    fgc.classList.toggle('lit', state.ch1Input === 'funcgen' || state.ch2Input === 'funcgen');
+    const labels = { off: 'disconnected', probe: 'bare probe (ambient noise)', funcgen: 'connected to Function Generator OUTPUT' };
+    document.getElementById('ch1Status').textContent = 'CH1: ' + labels[state.ch1Input];
+    document.getElementById('ch2Status').textContent = 'CH2: ' + labels[state.ch2Input];
+    if (state.ch1Input === 'funcgen') {
+      document.getElementById('linkNote').textContent = 'Red/black alligator clips linked to CH1 — the generator drives the oscilloscope input.';
+    } else if (state.ch2Input === 'funcgen') {
+      document.getElementById('linkNote').textContent = 'Red/black alligator clips linked to CH2 — the generator drives the oscilloscope input.';
+    } else {
+      document.getElementById('linkNote').textContent = 'Not connected to the oscilloscope.';
+    }
+    updateCablePath();
+  }
+  refreshConnections();
+
+  // ---------------- Function generator controls ----------------
+  document.getElementById('fg_power').addEventListener('click', ()=>{
+    fg.poweredOn = !fg.poweredOn;
+    if (!fg.poweredOn) fg.outputOn = false;
+    fgPanel.classList.toggle('powered-off', !fg.poweredOn);
+    document.getElementById('fg_powerLed').classList.toggle('on', fg.poweredOn);
+    refreshFgDisplay();
+  });
+  const waveBtns = { sine:'fg_w_sine', square:'fg_w_square', tri:'fg_w_tri', saw:'fg_w_saw', pulse:'fg_w_pulse' };
+  Object.keys(waveBtns).forEach(w=>{
+    document.getElementById(waveBtns[w]).addEventListener('click', ()=>{
+      fg.waveform = w;
+      Object.values(waveBtns).forEach(id=>document.getElementById(id).classList.remove('active'));
+      document.getElementById(waveBtns[w]).classList.add('active');
+      refreshFgDisplay();
+    });
+  });
+  document.getElementById('fg_output').addEventListener('click', ()=>{
+    if (!fg.poweredOn) return;
+    fg.outputOn = !fg.outputOn;
+    refreshFgDisplay();
+  });
+  document.getElementById('fg_load').addEventListener('click', ()=>{
+    fg.load = fg.load === '50' ? 'highz' : '50';
+    refreshFgDisplay();
+  });
+  ['fg_freq_val','fg_freq_unit','fg_amp_val','fg_amp_unit','fg_offset','fg_phase'].forEach(id=>{
+    document.getElementById(id).addEventListener('input', refreshFgDisplay);
+    document.getElementById(id).addEventListener('change', refreshFgDisplay);
+  });
+  function refreshFgDisplay(){
+    const names = { sine:'SINE', square:'SQUARE', tri:'TRIANGLE', saw:'RAMP', pulse:'PULSE' };
+    document.getElementById('fgDispWave').textContent = names[fg.waveform];
+    document.getElementById('fgDispFreq').textContent = fmtFreq(fgFreqHz());
+    document.getElementById('fgDispAmp').textContent = fgSetAmpVpp()<1 ? (fgSetAmpVpp()*1000).toFixed(1)+' mVpp' : fgSetAmpVpp().toFixed(3)+' Vpp';
+    document.getElementById('fgDispOffs').textContent = fgOffset().toFixed(3) + ' V';
+    document.getElementById('fgDispOut').textContent = fg.outputOn ? 'ON' : 'OFF';
+    document.getElementById('fgDispLoad').textContent = fg.load === '50' ? '50\u03a9' : 'High-Z';
+    document.getElementById('fg_output').classList.toggle('on', fg.outputOn);
+    document.getElementById('fg_output').textContent = 'Output: ' + (fg.outputOn ? 'ON' : 'OFF');
+    document.getElementById('fg_load').textContent = 'Output Load: ' + (fg.load === '50' ? '50\u03a9' : 'High-Z');
+  }
+  refreshFgDisplay();
+  fgPanel.classList.toggle('powered-off', !fg.poweredOn);
+
+  // ---------------- Tutorial ----------------
+  const steps = [
+    { title: 'Power on the DSO', desc: 'Press the oscilloscope POWER button. CH1 is on by default with a bare probe attached — you should see a mostly-flat, slightly noisy line.', targets: ['b_power'] },
+    { title: 'Turn CH2 on/off', desc: 'Press CH2 to make it active, press again to toggle it on or off, as in Lab Questions 1-2.', targets: ['b_ch2'] },
+    { title: 'Power on the Function Generator', desc: 'Press the generator\'s POWER button.', targets: ['fg_power'] },
+    { title: 'Set a 1 kHz Sine Wave', desc: 'Sine is selected by default. Set Freq to 1 and unit kHz, Amplitude to 100 mVpp, Offset 0 V, Phase 0°.', targets: ['fg_w_sine'] },
+    { title: 'Connect the Alligator-Clip Cable', desc: 'Click the generator OUTPUT jack (or the CH1 jack) to link the generator to the scope\'s CH1 input.', targets: ['fg_bnc','bnc_ch1'] },
+    { title: 'Turn the Output On', desc: 'Press "Output: OFF" on the generator to turn the signal on.', targets: ['fg_output'] },
+    { title: 'Auto Scale', desc: 'Press AUTO SCALE on the scope — it computes real volts/div and sec/div to fit the signal, just like a real DSO.', targets: ['b_auto'] },
+    { title: 'Take Measurements', desc: 'Press MEASURE, pick the source channel, then add Freq and Pk-Pk. Try zooming the SEC/DIV out until fewer than ~1 cycle shows — notice the frequency reading becomes unreliable, matching Lab Question 6.', targets: ['b_measure'] },
+    { title: 'High-Z vs 50Ω', desc: 'Turn Output off, switch "Output Load" to High-Z, set Amplitude to 3 Vpp, turn Output back on, then Auto Scale again. Compare the Pk-Pk reading to what you\'d get leaving it on 50Ω — this reproduces Lab Questions 8-9.', targets: ['fg_load'] }
+  ];
+  let tutorialOn = false, stepIdx = 0;
+  const tutorialCard = document.getElementById('tutorialCard');
+  function clearHighlights(){ document.querySelectorAll('.tutorial-highlight').forEach(el=>el.classList.remove('tutorial-highlight')); }
+
+  // Returns 'ok' | 'below' | 'above' describing where this step's target(s) sit
+  // relative to the currently visible (scrolled) part of the iframe viewport.
+  function stepTargetPosition(s){
+    if (!s.targets.length) return 'ok';
+    const vh = window.innerHeight;
+    let top = Infinity, bottom = -Infinity, found = false;
+    s.targets.forEach(id=>{
+      const el = document.getElementById(id);
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      top = Math.min(top, r.top); bottom = Math.max(bottom, r.bottom); found = true;
+    });
+    if (!found) return 'ok';
+    const margin = 30;
+    if (top > vh - margin) return 'below';
+    if (bottom < margin) return 'above';
+    return 'ok';
+  }
+
+  function renderStep(){
+    const s = steps[stepIdx];
+    document.getElementById('tStepBadge').textContent = (stepIdx+1)+'/'+steps.length;
+    document.getElementById('tPrev').disabled = stepIdx===0;
+    document.getElementById('tNext').textContent = stepIdx===steps.length-1 ? 'Finish' : 'Next ▶';
+    clearHighlights();
+    s.targets.forEach(id=>{ const el=document.getElementById(id); if (el) el.classList.add('tutorial-highlight'); });
+    updateTutorialBanner();
+  }
+
+  function scrollToStepTarget(){
+    const s = steps[stepIdx];
+    if (!s.targets.length) return;
+    const el = document.getElementById(s.targets[0]);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function updateTutorialBanner(){
+    if (!tutorialOn) return;
+    const s = steps[stepIdx];
+    const pos = stepTargetPosition(s);
+    if (pos === 'below') {
+      tutorialCard.classList.add('scroll-hint');
+      document.getElementById('tTitle').textContent = 'Scroll down to continue';
+      document.getElementById('tDesc').innerHTML = '<span class="scroll-arrow">\u2b07</span> "'+s.title+'" is further down the page — scroll down (or click this banner) to bring it into view.';
+    } else if (pos === 'above') {
+      tutorialCard.classList.add('scroll-hint');
+      document.getElementById('tTitle').textContent = 'Scroll up to continue';
+      document.getElementById('tDesc').innerHTML = '<span class="scroll-arrow" style="animation-direction:reverse;">\u2b06</span> "'+s.title+'" is further up the page — scroll up (or click this banner) to bring it into view.';
+    } else {
+      tutorialCard.classList.remove('scroll-hint');
+      document.getElementById('tTitle').textContent = s.title;
+      document.getElementById('tDesc').textContent = s.desc;
+    }
+  }
+  tutorialCard.addEventListener('click', (e)=>{
+    if (e.target.closest('.tutorial-nav')) return;
+    if (tutorialCard.classList.contains('scroll-hint')) scrollToStepTarget();
+  });
+  window.addEventListener('scroll', updateTutorialBanner);
+  window.addEventListener('resize', updateTutorialBanner);
+
+  document.getElementById('b_tutorial_toggle').addEventListener('click', ()=>{
+    tutorialOn = !tutorialOn; stepIdx = 0;
+    tutorialCard.classList.toggle('show', tutorialOn);
+    bench.classList.toggle('tutorial-active', tutorialOn);
+    document.getElementById('b_tutorial_toggle').textContent = tutorialOn ? '\u25a0 Exit Tutorial' : '\u25b6 Guided Tutorial';
+    if (tutorialOn) { window.scrollTo({top:0, behavior:'smooth'}); renderStep(); } else { clearHighlights(); }
+  });
+  document.getElementById('tNext').addEventListener('click', (e)=>{
+    e.stopPropagation();
+    if (stepIdx < steps.length-1) { stepIdx++; renderStep(); }
+    else {
+      tutorialOn=false; tutorialCard.classList.remove('show','scroll-hint');
+      bench.classList.remove('tutorial-active');
+      document.getElementById('b_tutorial_toggle').textContent='\u25b6 Guided Tutorial'; clearHighlights();
+    }
+  });
+  document.getElementById('tPrev').addEventListener('click', (e)=>{ e.stopPropagation(); if (stepIdx>0){ stepIdx--; renderStep(); } });
+  document.getElementById('tExit').addEventListener('click', (e)=>{
+    e.stopPropagation();
+    tutorialOn=false; tutorialCard.classList.remove('show','scroll-hint');
+    bench.classList.remove('tutorial-active');
+    document.getElementById('b_tutorial_toggle').textContent='\u25b6 Guided Tutorial'; clearHighlights();
+  });
+
+  document.getElementById('b_force').addEventListener('click', ()=>{
+    const el = document.getElementById('b_force');
+    el.classList.add('active'); setTimeout(()=>el.classList.remove('active'),180);
+    // FORCE grabs a fresh acquisition immediately, even while STOPPED —
+    // previously this button only flashed and did nothing else.
+    frozenNow = performance.now()/1000;
+  });
+
+  // ---------------- Tooltips ----------------
+  const titleMap = {
+    b_power: 'POWER — turns the oscilloscope on or off.',
+    b_measure: 'MEASURE — open the measurement menu (source channel, Freq, Pk-Pk, Clear Meas).',
+    b_auto: 'AUTO SCALE — analyzes the connected signal(s) and sets volts/div, sec/div and position automatically.',
+    b_runstop: 'RUN/STOP — freezes the live trace so you can inspect it, or resumes live acquisition.',
+    b_single: 'SINGLE — captures just one waveform sweep, then stops.',
+    k_pos1: "VERTICAL POSITION — moves the active channel's trace up or down. Continuous, like the real knob. Drag up/down, scroll, for fine control.",
+    k_v1: 'VERTICAL SCALE (VOLTS/DIV) — steps through the same calibrated values as a real scope: 2mV,5mV,10mV,20mV,50mV,0.1V,0.2V,0.5V,1V,2V,5V,10V. Drag or scroll to turn.',
+    b_ch1: 'CH1 — click once to make Channel 1 active for the VERTICAL controls, click again to show/hide it.',
+    b_ch2: 'CH2 — click once to make Channel 2 active for the VERTICAL controls, click again to show/hide it.',
+    b_coupling: 'COUPLING — DC shows the full signal including any offset; AC blocks the DC component.',
+    b_probeatt: 'PROBE — must match the physical probe. Since these are plain (1X) clip leads, leaving this at 10X will make the reading 10x too high, just like on real hardware.',
+    k_hpos: 'HORIZONTAL POSITION — shifts the whole waveform left or right in time. Drag or scroll to turn.',
+    k_time: 'HORIZONTAL SCALE (SEC/DIV) — steps through calibrated timebases from 1\u00b5s/div to 1s/div. Drag or scroll to turn.',
+    k_trig: 'TRIGGER LEVEL — sets the voltage the scope locks onto to keep the waveform stationary. Drag or scroll to turn.',
+    b_force: 'FORCE — forces an acquisition immediately, even while stopped.',
+    bnc_ch1: 'CH1 INPUT — click to cycle: disconnected \u2192 bare probe (ambient noise) \u2192 connected to the function generator (unplugs CH2 if it was connected there, since there\'s only one cable).',
+    bnc_ch2: 'CH2 INPUT — click to cycle: disconnected \u2192 bare probe (ambient noise) \u2192 connected to the function generator (unplugs CH1 if it was connected there, since there\'s only one cable).',
+    fg_power: 'POWER — turns the function generator on or off.',
+    fg_output: 'OUTPUT — enables/disables the signal at the OUTPUT jack, like pressing Channel then Output On on a real 33500B.',
+    fg_load: "OUTPUT LOAD — tells the generator what load it is driving. Leaving this at 50\u03a9 while actually driving a high-impedance scope input doubles the real terminal voltage versus the dial reading (see Lab Q8/Q9).",
+    fg_bnc: 'OUTPUT jack — click to connect/disconnect the alligator-clip cable. If not connected, it plugs into CH1 by default; click the CH2 jack directly to route it there instead.'
+  };
+  Object.keys(titleMap).forEach(id=>{ const el=document.getElementById(id); if (el) el.title = titleMap[id]; });
+
+  // ---------------- Canvas sizing ----------------
+  function resize(){ const r = canvas.getBoundingClientRect(); canvas.width = r.width*devicePixelRatio; canvas.height = r.height*devicePixelRatio; }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------------- Draw loop with real triggering + measurements ----------------
+  let frozenNow = 0;
+
+  function triggerCenterTime(now){
+    // Prefer whichever active, connected channel has a real periodic signal —
+    // this keeps the trace stationary in RUN mode like a real edge-triggered scope.
+    for (const ch of [1,2]) {
+      if (channelOn(ch) && channelHasPeriodicSignal(ch)) {
+        const f = fgFreqHz();
+        if (f > 0) { const p = 1/f; return Math.floor(now/p) * p; }
+      }
+    }
+    return now;
+  }
+
+  function plot(ch, color){
+    const W = canvas.width, H = canvas.height;
+    const cols = 10, rows = 8;
+    const cw = W/cols, chh = H/rows;
+    const volts = channelVolts(ch);
+    const posDiv = channelPos(ch);
+    const probeMult = channelProbeMult(ch);
+    const coupling = channelCoupling(ch);
+    const tdivSec = tdiv();
+    const totalSec = tdivSec*cols;
+    const now = state.running ? frozenNow : frozenNow;
+    const centerT = triggerCenterTime(now);
+
+    let maxV = -Infinity, minV = Infinity, clipTop = false, clipBottom = false;
+    ctx.beginPath();
+    ctx.strokeStyle = color; ctx.lineWidth = 2*devicePixelRatio;
+    ctx.shadowColor = color; ctx.shadowBlur = 6;
+    const N = 500;
+    let dcEstimate = 0;
+    if (coupling === 'AC') {
+      // crude DC blocking: subtract mean over the window
+      let sum = 0;
+      for (let i=0;i<=N;i++){
+        const frac=i/N; const tSec = centerT - totalSec/2 + frac*totalSec - state.hpos*tdivSec;
+        sum += channelSample(ch, tSec);
+      }
+      dcEstimate = sum/(N+1);
+    }
+    for (let i = 0; i <= N; i++) {
+      const frac = i/N;
+      const tSec = centerT - totalSec/2 + frac*totalSec - state.hpos*tdivSec;
+      let v = channelSample(ch, tSec) * probeMult;
+      if (coupling === 'AC') v -= dcEstimate*probeMult;
+      if (v > maxV) maxV = v;
+      if (v < minV) minV = v;
+      let divsFromCenter = v/volts;
+      if (divsFromCenter > 4) { divsFromCenter = 4; clipTop = true; }
+      if (divsFromCenter < -4) { divsFromCenter = -4; clipBottom = true; }
+      const x = frac*W;
+      const y = H/2 - divsFromCenter*chh - posDiv*chh;
+      if (i === 0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    const stats = { maxV, minV, clipTop, clipBottom, pkpk: maxV-minV };
+    if (ch===1) state.ch1Stats = stats; else state.ch2Stats = stats;
+  }
+
+  function computeFreqText(){
+    const ch = state.measSource;
+    if (!channelOn(ch)) return '---';
+    if (!channelHasPeriodicSignal(ch)) return '---';
+    const freqHz = fgFreqHz();
+    const totalSec = tdiv()*10;
+    const periods = totalSec*freqHz;
+    if (periods < 1) return '--- (< 1 cycle on screen)';
+    if (periods < 3) {
+      const jitter = (Math.random()-0.5)*0.12*freqHz;
+      return fmtFreq(freqHz+jitter) + '  \u26a0 low confidence';
+    }
+    return fmtFreq(freqHz);
+  }
+  function computePkPkText(){
+    const ch = state.measSource;
+    if (!channelOn(ch)) return '---';
+    const stats = ch===1?state.ch1Stats:state.ch2Stats;
+    if (!stats) return '---';
+    let txt = fmtVolts(stats.pkpk);
+    if (stats.clipTop || stats.clipBottom) txt += '  \u26a0 clipped, raise volts/div';
+    return txt;
+  }
+
+  function draw(now_ms){
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = '#00030a';
+    ctx.fillRect(0,0,W,H);
+
+    if (!state.poweredOn) { requestAnimationFrame(draw); return; }
+
+    const cols=10, rows=8;
+    const cw = W/cols, chh = H/rows;
+    ctx.strokeStyle = 'rgba(60,110,160,0.35)'; ctx.lineWidth = 1;
+    for (let i=1;i<cols;i++){ ctx.beginPath(); ctx.moveTo(i*cw,0); ctx.lineTo(i*cw,H); ctx.stroke(); }
+    for (let j=1;j<rows;j++){ ctx.beginPath(); ctx.moveTo(0,j*chh); ctx.lineTo(W,j*chh); ctx.stroke(); }
+    ctx.strokeStyle = 'rgba(90,150,200,0.55)';
+    ctx.beginPath(); ctx.moveTo(W/2,0); ctx.lineTo(W/2,H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke();
+
+    if (state.running) frozenNow = now_ms/1000;
+
+    if (state.ch1On) plot(1, '#f5d020');
+    if (state.ch2On) plot(2, '#3fc7ff');
+
+    ctx.font = (11*devicePixelRatio)+'px monospace';
+    if (state.ch1On) { ctx.fillStyle = '#f5d020'; ctx.fillText('CH1 '+fmtVolts(channelVolts(1))+'/div', 8, H-24*devicePixelRatio); }
+    if (state.ch2On) { ctx.fillStyle = '#3fc7ff'; ctx.fillText('CH2 '+fmtVolts(channelVolts(2))+'/div', 8, H-10*devicePixelRatio); }
+    ctx.fillStyle = '#d9dee3';
+    ctx.fillText('M '+fmtTime(tdiv())+'/div', 175*devicePixelRatio, H-10*devicePixelRatio);
+
+    const box = document.getElementById('measureBox');
+    if (state.measFreq || state.measPkPk) {
+      let html = '<div class="mlabel">Source: CH'+state.measSource+'</div>';
+      if (state.measFreq) html += 'Freq: ' + computeFreqText() + '<br/>';
+      if (state.measPkPk) html += 'Pk-Pk: ' + computePkPkText() + '<br/>';
+      box.innerHTML = html;
+    }
+
+    document.getElementById('settingsCorner').innerHTML =
+      'CH1: '+(state.ch1Coupling)+' '+(state.ch1Probe)+' &nbsp; CH2: '+(state.ch2Coupling)+' '+(state.ch2Probe);
+
+    if (state.ch1Input === 'funcgen') updateCablePath();
+    if (tutorialOn) updateTutorialBanner();
+
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+})();
+</script>
+"""
+
+
+def render_bench(height: int = 1500, scrolling: bool = True) -> None:
+    """Render the DSO + function generator bench into the current Streamlit page."""
+    components.html(BENCH_HTML, height=height, scrolling=scrolling)
