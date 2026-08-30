@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const API_BASE = (
+  import.meta.env.VITE_API_BASE || "http://localhost:8000"
+).replace(/\/$/, "");
 
 export class APIError extends Error {
   constructor(message, status = 0) {
@@ -31,6 +33,7 @@ export function clearAuth() {
 
 async function request(path, options = {}) {
   const token = getToken();
+
   const headers = {
     ...(options.body ? { "Content-Type": "application/json" } : {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -38,18 +41,20 @@ async function request(path, options = {}) {
   };
 
   let response;
+
   try {
     response = await fetch(`${API_BASE}${path}`, {
       ...options,
       headers,
     });
-  } catch (error) {
+  } catch {
     throw new APIError(
-      `Cannot reach ENGiTwin backend at ${API_BASE}. Start FastAPI first.`
+      `Cannot reach ENGiTwin backend at ${API_BASE}. Please try again later.`
     );
   }
 
   let data = null;
+
   try {
     data = await response.json();
   } catch {
@@ -74,12 +79,19 @@ export const api = {
   signup: (name, email, password, role, institution_code = null) =>
     request("/auth/signup", {
       method: "POST",
-      body: JSON.stringify({ name, email, password, role, institution_code }),
+      body: JSON.stringify({
+        name,
+        email,
+        password,
+        role,
+        institution_code,
+      }),
     }),
 
   me: () => request("/users/me"),
 
   labs: () => request("/labs"),
+
   createLab: (title, description, category) =>
     request("/labs", {
       method: "POST",
@@ -87,8 +99,16 @@ export const api = {
     }),
 
   experiments: (labId) => request(`/labs/${labId}/experiments`),
+
   experiment: (id) => request(`/experiments/${id}`),
-  createExperiment: (labId, title, description, simulation_config, max_score) =>
+
+  createExperiment: (
+    labId,
+    title,
+    description,
+    simulation_config,
+    max_score
+  ) =>
     request("/experiments", {
       method: "POST",
       body: JSON.stringify({
@@ -126,25 +146,40 @@ export const api = {
   aiAsk: (attemptId, student_message = null) =>
     request("/ai/ask", {
       method: "POST",
-      body: JSON.stringify({ attempt_id: attemptId, student_message }),
+      body: JSON.stringify({
+        attempt_id: attemptId,
+        student_message,
+      }),
     }),
 
   users: () => request("/users"),
 
   assignments: () => request("/assignments/mine"),
 
-  createAssignment: (experiment_id, student_id, due_date = null) =>
+  createAssignment: (
+    experiment_id,
+    student_id,
+    due_date = null
+  ) =>
     request("/assignments", {
       method: "POST",
-      body: JSON.stringify({ experiment_id, student_id, due_date }),
+      body: JSON.stringify({
+        experiment_id,
+        student_id,
+        due_date,
+      }),
     }),
 
   analytics: () => request("/analytics/me"),
 
   institutions: () => request("/institutions"),
+
   createInstitution: (name, max_students = 0) =>
     request("/institutions", {
       method: "POST",
-      body: JSON.stringify({ name, max_students }),
+      body: JSON.stringify({
+        name,
+        max_students,
+      }),
     }),
 };
