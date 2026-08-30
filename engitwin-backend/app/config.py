@@ -16,9 +16,12 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./engitwin.db"
 
     # AI assistant
-    AI_PROVIDER: str = "anthropic"  # "anthropic" or "local"
+    AI_PROVIDER: str = "anthropic"  # "anthropic", "openai", or "local"
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
+
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-3.5-turbo"
 
     LOCAL_AI_URL: str = "http://localhost:11434/api/generate"
     LOCAL_AI_MODEL: str = "llama3"

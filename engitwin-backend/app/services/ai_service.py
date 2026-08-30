@@ -38,6 +38,8 @@ class AIService:
         """
         if settings.AI_PROVIDER == "local":
             return self._ask_local(experiment_context, conversation)
+        if settings.AI_PROVIDER == "openai":
+            return self._ask_openai(experiment_context, conversation)
         return self._ask_anthropic(experiment_context, conversation)
 
     def feedback(self, experiment_context: dict, measurements: dict, score: float, max_score: float) -> str:
@@ -53,6 +55,8 @@ class AIService:
         )
         if settings.AI_PROVIDER == "local":
             return self._call_local(prompt)
+        if settings.AI_PROVIDER == "openai":
+            return self._call_openai(prompt)
         return self._call_anthropic(prompt)
 
     # ---------------- Anthropic (online) ----------------
@@ -99,6 +103,57 @@ class AIService:
             data = response.json()
             text_blocks = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
             return "\n".join(text_blocks).strip() or "Sorry, I didn't get a response - try again."
+        except requests.RequestException as e:
+            return f"[AI assistant error: {e}]"
+
+    # ---------------- OpenAI (online) ----------------
+
+    def _ask_openai(self, experiment_context: dict, conversation: list[dict]) -> str:
+        context_line = (
+            f"Experiment: {experiment_context.get('title')}\n"
+            f"Description: {experiment_context.get('description')}\n"
+            f"Live simulation data: {json.dumps(experiment_context.get('simulation_data', {}))}\n"
+        )
+        messages = [{"role": "user", "content": context_line}]
+        for turn in conversation:
+            role = "assistant" if turn["role"] == "assistant" else "user"
+            messages.append({"role": role, "content": turn["content"]})
+        if not conversation:
+            messages.append({"role": "user", "content": "Start the lab conversation with your first question."})
+
+        return self._call_openai_messages(messages)
+
+    def _call_openai(self, prompt: str) -> str:
+        return self._call_openai_messages([{"role": "user", "content": prompt}])
+
+    def _call_openai_messages(self, messages: list[dict]) -> str:
+        if not settings.OPENAI_API_KEY:
+            return "[AI assistant not configured: set OPENAI_API_KEY in your .env file]"
+
+        # OpenAI's chat completions API takes the system prompt as a message
+        # in the same list, unlike Anthropic which uses a separate field.
+        full_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
+
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": settings.OPENAI_MODEL,
+                    "max_tokens": 400,
+                    "messages": full_messages,
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            data = response.json()
+            choices = data.get("choices", [])
+            if not choices:
+                return "Sorry, I didn't get a response - try again."
+            return choices[0]["message"]["content"].strip()
         except requests.RequestException as e:
             return f"[AI assistant error: {e}]"
 
